@@ -819,7 +819,7 @@ public final class Buffer implements BufferedSource, BufferedSink, Cloneable {
   /** For testing. This returns the sizes of the segments in this buffer. */
   List<Integer> segmentSizes() {
     if (head == null) return Collections.emptyList();
-    List<Integer> result = new ArrayList<>();
+    List<Integer> result = new ArrayList<Integer>();
     result.add(head.limit - head.pos);
     for (Segment s = head.next; s != head; s = s.next) {
       result.add(s.limit - s.pos);
