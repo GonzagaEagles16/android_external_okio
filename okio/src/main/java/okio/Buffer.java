@@ -364,37 +364,51 @@ public final class Buffer implements BufferedSource, BufferedSink, Cloneable {
     return Util.reverseBytesLong(readLong());
   }
 
-  @Override public ByteString readByteString() throws IOException {
+  @Override public ByteString readByteString() {
     return new ByteString(readByteArray());
   }
 
-  @Override public ByteString readByteString(long byteCount) {
+  @Override public ByteString readByteString(long byteCount) throws EOFException {
     return new ByteString(readByteArray(byteCount));
   }
 
-  @Override public void readFully(Buffer sink, long byteCount) throws IOException {
+  @Override public void readFully(Buffer sink, long byteCount) throws EOFException {
+    if (size < byteCount) {
+      sink.write(this, size); // Exhaust ourselves.
+      throw new EOFException();
+    }
     sink.write(this, byteCount);
   }
 
   @Override public long readAll(Sink sink) throws IOException {
-    long totalBytesWritten = size();
-    sink.write(this, totalBytesWritten);
-    return totalBytesWritten;
+    long byteCount = size;
+    if (byteCount > 0) {
+      sink.write(this, byteCount);
+    }
+    return byteCount;
   }
 
-  @Override public String readUtf8() throws IOException {
-    return readString(size, Util.UTF_8);
+  @Override public String readUtf8() {
+    try {
+      return readString(size, Util.UTF_8);
+    } catch (EOFException e) {
+      throw new AssertionError(e);
+    }
   }
 
-  @Override public String readUtf8(long byteCount) {
+  @Override public String readUtf8(long byteCount) throws EOFException {
     return readString(byteCount, Util.UTF_8);
   }
 
-  @Override public String readString(Charset charset) throws IOException {
-    return readString(size, charset);
+  @Override public String readString(Charset charset) {
+    try {
+      return readString(size, charset);
+    } catch (EOFException e) {
+      throw new AssertionError(e);
+    }
   }
 
-  @Override public String readString(long byteCount, Charset charset) {
+  @Override public String readString(long byteCount, Charset charset) throws EOFException {
     checkOffsetAndCount(size, 0, byteCount);
     if (charset == null) throw new IllegalArgumentException("charset == null");
     if (byteCount > Integer.MAX_VALUE) {
@@ -420,7 +434,7 @@ public final class Buffer implements BufferedSource, BufferedSink, Cloneable {
     return result;
   }
 
-  @Override public String readUtf8Line() throws IOException {
+  @Override public String readUtf8Line() throws EOFException {
     long newline = indexOf((byte) '\n');
 
     if (newline == -1) {
@@ -430,13 +444,13 @@ public final class Buffer implements BufferedSource, BufferedSink, Cloneable {
     return readUtf8Line(newline);
   }
 
-  @Override public String readUtf8LineStrict() throws IOException {
+  @Override public String readUtf8LineStrict() throws EOFException {
     long newline = indexOf((byte) '\n');
     if (newline == -1) throw new EOFException();
     return readUtf8Line(newline);
   }
 
-  String readUtf8Line(long newline) {
+  String readUtf8Line(long newline) throws EOFException {
     if (newline > 0 && getByte(newline - 1) == '\r') {
       // Read everything until '\r\n', then skip the '\r\n'.
       String result = readUtf8((newline - 1));
@@ -452,38 +466,40 @@ public final class Buffer implements BufferedSource, BufferedSink, Cloneable {
   }
 
   @Override public byte[] readByteArray() {
-    return readByteArray(size);
+    try {
+      return readByteArray(size);
+    } catch (EOFException e) {
+      throw new AssertionError(e);
+    }
   }
 
-  @Override public byte[] readByteArray(long byteCount) {
+  @Override public byte[] readByteArray(long byteCount) throws EOFException {
     checkOffsetAndCount(this.size, 0, byteCount);
     if (byteCount > Integer.MAX_VALUE) {
       throw new IllegalArgumentException("byteCount > Integer.MAX_VALUE: " + byteCount);
     }
 
-    int offset = 0;
     byte[] result = new byte[(int) byteCount];
-
-    while (offset < byteCount) {
-      int toCopy = (int) Math.min(byteCount - offset, head.limit - head.pos);
-      System.arraycopy(head.data, head.pos, result, offset, toCopy);
-
-      offset += toCopy;
-      head.pos += toCopy;
-
-      if (head.pos == head.limit) {
-        Segment toRecycle = head;
-        head = toRecycle.pop();
-        SegmentPool.INSTANCE.recycle(toRecycle);
-      }
-    }
-
-    this.size -= byteCount;
+    readFully(result);
     return result;
   }
 
-  /** Like {@link InputStream#read}. */
-  int read(byte[] sink, int offset, int byteCount) {
+  @Override public int read(byte[] sink) {
+    return read(sink, 0, sink.length);
+  }
+
+  @Override public void readFully(byte[] sink) throws EOFException {
+    int offset = 0;
+    while (offset < sink.length) {
+      int read = read(sink, offset, sink.length - offset);
+      if (read == -1) throw new EOFException();
+      offset += read;
+    }
+  }
+
+  @Override public int read(byte[] sink, int offset, int byteCount) {
+    checkOffsetAndCount(sink.length, offset, byteCount);
+
     Segment s = this.head;
     if (s == null) return -1;
     int toCopy = Math.min(byteCount, s.limit - s.pos);
@@ -505,16 +521,20 @@ public final class Buffer implements BufferedSource, BufferedSink, Cloneable {
    * with a buffer will return its segments to the pool.
    */
   public void clear() {
-    skip(size);
+    try {
+      skip(size);
+    } catch (EOFException e) {
+      throw new AssertionError(e);
+    }
   }
 
   /** Discards {@code byteCount} bytes from the head of this buffer. */
-  @Override public void skip(long byteCount) {
-    checkOffsetAndCount(this.size, 0, byteCount);
-
-    this.size -= byteCount;
+  @Override public void skip(long byteCount) throws EOFException {
     while (byteCount > 0) {
+      if (head == null) throw new EOFException();
+
       int toSkip = (int) Math.min(byteCount, head.limit - head.pos);
+      size -= toSkip;
       byteCount -= toSkip;
       head.pos += toSkip;
 
@@ -799,7 +819,7 @@ public final class Buffer implements BufferedSource, BufferedSink, Cloneable {
   /** For testing. This returns the sizes of the segments in this buffer. */
   List<Integer> segmentSizes() {
     if (head == null) return Collections.emptyList();
-    List<Integer> result = new ArrayList<Integer>();
+    List<Integer> result = new ArrayList<>();
     result.add(head.limit - head.pos);
     for (Segment s = head.next; s != head; s = s.next) {
       result.add(s.limit - s.pos);
@@ -859,7 +879,7 @@ public final class Buffer implements BufferedSource, BufferedSink, Cloneable {
     }
 
     if (size <= 16) {
-      ByteString data = clone().readByteString(size);
+      ByteString data = clone().readByteString();
       return String.format("Buffer[size=%s data=%s]", size, data.hex());
     }
 
